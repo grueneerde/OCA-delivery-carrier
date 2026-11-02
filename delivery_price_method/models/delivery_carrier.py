@@ -21,15 +21,19 @@ class DeliveryCarrier(models.Model):
     def rate_shipment(self, order):
         """Trick the method for using all the upstream code for the
         price computation in case of using fixed or base_on_rule.
+
+        The method is only swapped in the cache: writing it would lock the
+        carrier row and make concurrent transactions fail to serialize.
         """
-        previous_method = False
-        if self.price_method in ("fixed", "base_on_rule"):
-            previous_method = self.delivery_type
-            self.sudo().delivery_type = self.price_method
-        res = super().rate_shipment(order)
-        if previous_method:
-            self.sudo().delivery_type = previous_method
-        return res
+        if self.price_method not in ("fixed", "base_on_rule"):
+            return super().rate_shipment(order)
+        field = self._fields["delivery_type"]
+        previous_method = self.delivery_type
+        self.env.cache.set(self, field, self.price_method)
+        try:
+            return super().rate_shipment(order)
+        finally:
+            self.env.cache.set(self, field, previous_method)
 
     def send_shipping(self, pickings):
         res = super().send_shipping(pickings)

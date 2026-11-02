@@ -1,6 +1,9 @@
 # Copyright 2020 Trey, Kilobytes de Soluciones
 # Copyright 2020 Tecnativa - Pedro M. Baeza
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
+from unittest.mock import patch
+
+from odoo.exceptions import UserError
 from odoo.tests import Form
 from odoo.tests.common import TransactionCase
 from odoo.tools import float_compare
@@ -117,3 +120,42 @@ class TestDeliveryPriceMethod(TransactionCase):
         delivery_lines = sale.order_line.filtered(lambda r: r.is_delivery)
         delivery_price = sum(delivery_lines.mapped("price_unit"))
         self.assertEqual(delivery_price, 11.11)
+
+    def _set_base_on_rule_price_method(self):
+        self.carrier.write(
+            {
+                "price_method": "base_on_rule",
+                "price_rule_ids": [
+                    (
+                        0,
+                        0,
+                        {
+                            "variable": "quantity",
+                            "operator": "==",
+                            "max_value": 1,
+                            "list_base_price": 11.11,
+                        },
+                    )
+                ],
+            }
+        )
+
+    def test_rate_shipment_does_not_write_carrier(self):
+        self._set_base_on_rule_price_method()
+        with patch.object(type(self.carrier), "write") as mock_write:
+            res = self.carrier.rate_shipment(self.sale)
+        mock_write.assert_not_called()
+        # The price comes from the rules, not from the carrier's fixed price
+        self.assertEqual(float_compare(res["price"], 11.11, precision_digits=2), 0)
+        self.assertEqual(self.carrier.delivery_type, "fixed")
+
+    def test_rate_shipment_restores_method_on_error(self):
+        self._set_base_on_rule_price_method()
+        with patch.object(
+            type(self.carrier),
+            "base_on_rule_rate_shipment",
+            side_effect=UserError("Rating failed"),
+        ):
+            with self.assertRaises(UserError):
+                self.carrier.rate_shipment(self.sale)
+        self.assertEqual(self.carrier.delivery_type, "fixed")
